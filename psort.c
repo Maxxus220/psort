@@ -1,10 +1,11 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <sys/sysinfo.h>
 
 
 int main(int argc, char** argv) {
     const int OVERSAMPLING_FACTOR = 3;
-    const int NUM_CORES;
+    const int NUM_CORES = get_nprocs();
     const int ENTRY_DATA_SIZE = 96;
 
     // Check if valid input and get filenames from args
