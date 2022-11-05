@@ -7,7 +7,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <time.h>
 #include "psort.h"
+
+const int ENTRY_SIZE = 100;
+const int OVERSAMPLING_FACTOR = 3;
+const int NUM_CORES;
 
 /**
  * Takes in an input filename and output filename
@@ -18,10 +23,7 @@
  * sample sort and parallel processing.
 */
 int main(int argc, char** argv) {
-    const int OVERSAMPLING_FACTOR = 3;
     const int NUM_CORES = get_nprocs();
-    const int ENTRY_DATA_SIZE = 96;
-    const int ENTRY_SIZE = 100;
 
     int status;
 
@@ -33,11 +35,11 @@ int main(int argc, char** argv) {
     void* inputMap;
     int inpFd;
     int numEntries;
-    if((status = mapInputFile(&inputMap, &inpFd, &numEntries, ENTRY_SIZE, argv[1])) != 0) {
+    if((status = mapInputFile(&inputMap, &inpFd, &numEntries, argv[1])) != 0) {
         return status;
     }
 
-    if((status = sampleSort(inputMap, OVERSAMPLING_FACTOR, NUM_CORES, numEntries, ENTRY_SIZE)) != 0) {
+    if((status = sampleSort(inputMap, numEntries)) != 0) {
         return status;
     }
 
@@ -73,7 +75,7 @@ int main(int argc, char** argv) {
  * @param fileName      Name of file to map
  * @return 0 if successful 1 if an error occurs
 */
-int mapInputFile(void** map, int* fd, int* numEntries, int entrySize, char* fileName) {
+int mapInputFile(void** map, int* fd, int* numEntries, char* fileName) {
     if((*fd = open(fileName, O_RDONLY)) < 0) {
         return 1;
     }
@@ -88,7 +90,7 @@ int mapInputFile(void** map, int* fd, int* numEntries, int entrySize, char* file
         return 1;
     }
 
-    *numEntries = fileStats.st_size / entrySize;
+    *numEntries = fileStats.st_size / ENTRY_SIZE;
 
     return 0;
 }
@@ -144,13 +146,10 @@ int mapCleanUp(void* map, int fd, int size) {
  * Uses parralel processing with threads.
  * 
  * @param arr       The array to sort
- * @param k         Oversampling constant
- * @param p         Number of processors available
  * @param length    Length of arr
- * @param entrySize Size of each entry in arr
  * @return 0 if successful 1 if an error occurs
 */
-int sampleSort(void* arr, int k, int p, int length, int entrySize) {
+int sampleSort(void* arr, int length) {
 
     // Select (p-1)*k samples
 
@@ -171,7 +170,7 @@ int sampleSort(void* arr, int k, int p, int length, int entrySize) {
  * @param entrySize Size of each entry in arr
  * @return 0 if successful 1 if an error occurs
 */
-int quickSort(void* arr, int length, int entrySize) {
+int quickSort(void* arr, int length) {
 
     // Select first element as pivot
 
@@ -182,4 +181,19 @@ int quickSort(void* arr, int length, int entrySize) {
     // Combine
 
     return 0;
+}
+
+int sampleArray(void* arr, int length, int** samples) {
+    srand(time(NULL));
+    int sampleSize = (NUM_CORES-1) * OVERSAMPLING_FACTOR;
+    *samples = malloc(sampleSize * sizeof(int));
+    for(int i = 0; i < sampleSize; i++) {
+        int sampleIndex = rand() % length;
+        *samples[i] = getKey(arr, sampleIndex);
+    }
+    return 0;
+}
+
+int getKey(void* arr, int index) {
+    return *(int*)(arr + (index * ENTRY_SIZE));
 }
