@@ -10,7 +10,7 @@
 #include <time.h>
 #include "psort.h"
 
-const int ENTRY_SIZE = 100;
+int ENTRY_SIZE = 100;
 const int OVERSAMPLING_FACTOR = 3;
 const int NUM_CORES;
 
@@ -151,7 +151,14 @@ int mapCleanUp(void* map, int fd, int size) {
 */
 int sampleSort(void* arr, int length) {
 
-    // Select (p-1)*k samples
+    int* samples;
+    int sampleLength = sampleArray(arr, length, &samples);
+
+    // Temporarily change ENTRY_SIZE to sort samples
+    int tmp = ENTRY_SIZE;
+    ENTRY_SIZE = 4;
+    quickSort(samples, sampleLength);
+    ENTRY_SIZE = tmp;
 
     // Select p bucket bounds
 
@@ -167,22 +174,44 @@ int sampleSort(void* arr, int length) {
  * 
  * @param arr       The array to sort
  * @param length    # of elements in arr
- * @param entrySize Size of each entry in arr
- * @return 0 if successful 1 if an error occurs
 */
-int quickSort(void* arr, int length) {
+void quickSort(void* arr, int length) {
+
+    void* tmp = malloc(ENTRY_SIZE);
 
     // Select first element as pivot
+    int pivot = getKey(arr, 0);
+    swap(arr, 0, length-1, tmp);
 
     // Partition other elements
+    int leftPartitionSize = 0;
+    for(int i = 0; i < length-1; i++) {
+        if(getKey(arr, i) < pivot) {
+            if(leftPartitionSize != i) {
+                swap(arr, leftPartitionSize, i, tmp);
+            }
+            leftPartitionSize++;
+        }
+    }
+    swap(arr, leftPartitionSize, length-1, tmp);
+
+    free(tmp);
 
     // Call quick sort on partitions
-
-    // Combine
-
-    return 0;
+    quickSort(arr, leftPartitionSize);
+    quickSort((arr + (leftPartitionSize * ENTRY_SIZE)), length-leftPartitionSize);
 }
 
+/**
+ * Samples (NUM_CORES-1) * OVERSAMPLING_FACTOR keys
+ * from arr putting them into an array. Sets samples
+ * to that array.
+ * 
+ * @param arr       Array to sample
+ * @param length    Length of arr
+ * @param samples   Return parameter for sample array
+ * @return Length of samples
+*/
 int sampleArray(void* arr, int length, int** samples) {
     srand(time(NULL));
     int sampleSize = (NUM_CORES-1) * OVERSAMPLING_FACTOR;
@@ -191,9 +220,46 @@ int sampleArray(void* arr, int length, int** samples) {
         int sampleIndex = rand() % length;
         *samples[i] = getKey(arr, sampleIndex);
     }
-    return 0;
+    return sampleSize;
 }
 
+/**
+ * Gets the pointer to the entry at index
+ * 
+ * @param arr    Array to search
+ * @param index  Index of entry
+ * @return Pointer to entry
+*/
+void* getEntry(void* arr, int index) {
+    return arr + (index * ENTRY_SIZE);
+}
+
+/**
+ * Gets the integer key at the start of an
+ * entry at index
+ * 
+ * @param arr   Array to search
+ * @param index Index of entry
+ * @return Key of entry
+*/
 int getKey(void* arr, int index) {
     return *(int*)(arr + (index * ENTRY_SIZE));
+}
+
+/**
+ * Swaps the entries at firstIndex and secondIndex
+ * 
+ * @param arr           Array to swap in
+ * @param firstIndex
+ * @param secondIndex
+ * @param tmp           Temporary entry space used to swap values 
+ *                      provided by caller must be ENTRY_SIZE
+*/
+void swap(void* arr, int firstIndex, int secondIndex, void* tmp) {
+    void* entryOne = getEntry(arr, firstIndex);
+    void* entryTwo = getEntry(arr, secondIndex);
+
+    memcpy(tmp, entryOne, ENTRY_SIZE);
+    memcpy(entryOne, entryTwo, ENTRY_SIZE);
+    memcpy(entryTwo, tmp, ENTRY_SIZE);
 }
