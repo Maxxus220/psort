@@ -32,9 +32,9 @@ int selectSamples(int** selectedSamples, int* samples);
 
 void createBuckets(struct node*** buckets, struct node*** tails, int* bucketSizes);
 
-void fillBuckets(struct node** buckets, struct node** tails, int* bucketSizes, int* selectedSamples, int selectedSamplesLength, void* arr, int length);
+void fillBuckets(struct node** buckets, struct node** tails, int* bucketSizes, struct node** hashTable, int* selectedSamples, int selectedSamplesLength, void* arr, int length);
 
-void placeBuckets(struct node** buckets, int* bucketSizes, void* arr);
+void placeBuckets(struct node** buckets, int* bucketSizes, struct node** hashTable, void* arr);
 
 void* createQuickSortThread(void* args);
 
