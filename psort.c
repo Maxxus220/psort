@@ -9,10 +9,11 @@
 #include <string.h>
 #include <time.h>
 #include "psort.h"
+#include <pthread.h>
 
-int ENTRY_SIZE = 100;
 const int OVERSAMPLING_FACTOR = 3;
-const int NUM_CORES;
+int NUM_CORES;
+
 
 /**
  * Takes in an input filename and output filename
@@ -23,7 +24,7 @@ const int NUM_CORES;
  * sample sort and parallel processing.
 */
 int main(int argc, char** argv) {
-    const int NUM_CORES = get_nprocs();
+    NUM_CORES = get_nprocs();
 
     int status;
 
@@ -51,6 +52,7 @@ int main(int argc, char** argv) {
 
     // Copy sorted records over
     memcpy(outputMap, inputMap, numEntries * ENTRY_SIZE);
+    msync(outputMap, numEntries * ENTRY_SIZE, MS_SYNC);
 
     if((status = mapCleanUp(inputMap, inpFd, numEntries * ENTRY_SIZE)) != 0) {
         return status;
@@ -108,7 +110,7 @@ int mapInputFile(void** map, int* fd, int* numEntries, char* fileName) {
  * @return 0 if successful 1 if an error occurs
 */
 int mapOutputFile(void** map, int* fd, int size, char* fileName) {
-    if((*fd = open(fileName, O_WRONLY | O_CREAT | S_IRWXU)) < 0) {
+    if((*fd = open(fileName, O_WRONLY | O_CREAT, S_IRWXU)) < 0) {
         return 1;
     }
 
@@ -160,22 +162,49 @@ int sampleSort(void* arr, int length) {
     quickSort(samples, sampleLength);
     ENTRY_SIZE = tmp;
 
-    // Select p bucket bounds
+    int* selectedSamples;
+    int selectedSamplesLength = selectSamples(&selectedSamples, samples);
 
-    // Place arr entries into p buckets
+    // Buckets are linked lists
+    int bucketSizes[NUM_CORES];
+    struct node** buckets;
+    struct node** tails;
+    createBuckets(&buckets, &tails, bucketSizes);
 
-    // Start quicksort for each thread on a bucket
+    fillBuckets(buckets, tails, bucketSizes, selectedSamples, selectedSamplesLength, arr, length);
 
+    placeBuckets(buckets, bucketSizes, arr);
+
+    int bucketStartIndex = 0;
+    pthread_t thread_ids[NUM_CORES];
+    for(int i = 0; i < NUM_CORES; i++) {
+        struct threadArgs args;
+        args.arr = getEntry(arr, bucketStartIndex);
+        args.length = bucketSizes[i];
+        pthread_create(&(thread_ids[i]), NULL, createQuickSortThread, (void*)(&args));
+        bucketStartIndex += bucketSizes[i];
+    }
+    for(int i = 0; i < NUM_CORES; i++) {
+        pthread_join(thread_ids[i], NULL);
+    }
+
+    free(samples);
+    free(selectedSamples);
+    free(buckets);
+    free(tails);
     return 0;
 }
 
 /**
  * Runs the quick sort algorithm on arr.
  * 
- * @param arr       The array to sort
- * @param length    # of elements in arr
+ * @param arr Struct containing array and length
 */
 void quickSort(void* arr, int length) {
+
+    if(length <= 1) {
+        return;
+    }
 
     void* tmp = malloc(ENTRY_SIZE);
 
@@ -199,7 +228,7 @@ void quickSort(void* arr, int length) {
 
     // Call quick sort on partitions
     quickSort(arr, leftPartitionSize);
-    quickSort((arr + (leftPartitionSize * ENTRY_SIZE)), length-leftPartitionSize);
+    quickSort((arr + ((leftPartitionSize + 1) * ENTRY_SIZE)), length-leftPartitionSize-1);
 }
 
 /**
@@ -218,7 +247,7 @@ int sampleArray(void* arr, int length, int** samples) {
     *samples = malloc(sampleSize * sizeof(int));
     for(int i = 0; i < sampleSize; i++) {
         int sampleIndex = rand() % length;
-        *samples[i] = getKey(arr, sampleIndex);
+        (*samples)[i] = getKey(arr, sampleIndex);
     }
     return sampleSize;
 }
@@ -262,4 +291,111 @@ void swap(void* arr, int firstIndex, int secondIndex, void* tmp) {
     memcpy(tmp, entryOne, ENTRY_SIZE);
     memcpy(entryOne, entryTwo, ENTRY_SIZE);
     memcpy(entryTwo, tmp, ENTRY_SIZE);
+}
+
+/**
+ * Selects samples from samples at k, 2k, 3k, ..., (p-1)k
+ * 
+ * @param selectedSamples   Return parameter for array of samples
+ * @param samples           Sample array
+ * @return Length of selectedSamples
+*/
+int selectSamples(int** selectedSamples, int* samples) {
+    *selectedSamples = malloc((NUM_CORES-1) * sizeof(int));
+    for(int i = 1; i < NUM_CORES; i++) {
+        (*selectedSamples)[i-1] = samples[i * OVERSAMPLING_FACTOR];
+    }
+    return NUM_CORES-1;
+}
+
+/**
+ * Initiates a linked list for each bucket
+ * 
+ * @param buckets       Return parameter for array of linked list heads
+ * @param tails         Return parameter for array of linked list tails
+ * @param bucketSizes   Return parameter for sizes of linked lists
+*/
+void createBuckets(struct node*** buckets, struct node*** tails, int* bucketSizes) {
+    for(int i = 0; i < NUM_CORES; i++) {
+        bucketSizes[i] = 0;
+    }
+    *buckets = malloc(NUM_CORES * sizeof(struct node*));
+    *tails = malloc(NUM_CORES * sizeof(struct node*));
+    for(int i = 0; i < NUM_CORES; i++) {
+        struct node head;
+        head.entryIndex = -1;
+        head.next = NULL;
+        (*buckets)[i] = &head;
+        (*tails)[i] = &head;
+    }
+}
+
+/**
+ * Enters every element of arr into its corresponding bucket
+ * 
+ * @param buckets               Array of head nodes for buckets
+ * @param tails                 Array of tail nodes for buckets
+ * @param bucketSizes           Array of bucket sizes
+ * @param selectedSamples       Array containing sample values
+ * @param selectedSamplesLength Size of selected samples array
+ * @param arr                   Array to take elements from
+ * @param length                Length of arr
+*/
+void fillBuckets(struct node** buckets, struct node** tails, int* bucketSizes, int* selectedSamples, int selectedSamplesLength, void* arr, int length) {
+    for(int i = 0; i < length; i++) {
+
+        int key = getKey(arr, i);
+
+        struct node element;
+        element.entryIndex = key;
+        element.next = NULL;
+
+        for(int j = 0; j < selectedSamplesLength; j++) {
+            if(key <= selectedSamples[j]) {
+                tails[j]->next = &element;
+                tails[j] = &element;
+                bucketSizes[j]++;
+                goto NEXT;
+            }
+        }
+        tails[selectedSamplesLength]->next = &element;
+        tails[selectedSamplesLength] = &element;
+        bucketSizes[selectedSamplesLength]++;
+
+        NEXT:
+    }
+}
+
+/**
+ * Places bucket elements into corresponding positions in arr
+ * 
+ * @param buckets       Array of bucket head nodes
+ * @param bucketSizes   Array of bucket sizes
+ * @param arr           Array with entries
+*/
+void placeBuckets(struct node** buckets, int* bucketSizes, void* arr) {
+    int arrCounter = 0;
+    void* tmp = malloc(ENTRY_SIZE);
+    for(int i = 0; i < NUM_CORES; i++) {
+        struct node curNode = *(buckets[i]->next);
+        for(int j = 0; j < bucketSizes[i]; j++) {
+            swap(arr, arrCounter, curNode.entryIndex, tmp);
+            arrCounter++;
+            curNode = *(curNode.next);
+        }
+    }
+    free(tmp);
+}
+
+/**
+ * Wrapper function for quicksort when called
+ * by a newly created thread.
+ * 
+ * @param args A pointer to a threadArgs struct
+ * @return NULL
+*/
+void* createQuickSortThread(void* args) {
+    struct threadArgs arr = *((struct threadArgs*)args);
+    quickSort(arr.arr, arr.length);
+    return NULL;
 }
