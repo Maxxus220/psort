@@ -13,7 +13,10 @@
 
 const int OVERSAMPLING_FACTOR = 3;
 int NUM_CORES;
+int ENTRY_SIZE = 100;
 
+#define DEBUGGING
+#ifndef DEBUGGING
 
 /**
  * Takes in an input filename and output filename
@@ -24,6 +27,7 @@ int NUM_CORES;
  * sample sort and parallel processing.
 */
 int main(int argc, char** argv) {
+
     NUM_CORES = get_nprocs();
 
     int status;
@@ -44,25 +48,29 @@ int main(int argc, char** argv) {
         return status;
     }
 
-    void* outputMap;
-    int outFd;
-    if((status = mapOutputFile(&outputMap, &outFd, numEntries * ENTRY_SIZE, argv[2])) != 0) {
-        return status;
-    }
+    // void* outputMap;
+    // int outFd;
+    // if((status = mapOutputFile(&outputMap, &outFd, numEntries * ENTRY_SIZE, argv[2])) != 0) {
+    //     return status;
+    // }
 
     // Copy sorted records over
-    memcpy(outputMap, inputMap, numEntries * ENTRY_SIZE);
-    msync(outputMap, numEntries * ENTRY_SIZE, MS_SYNC);
+    writeEntries(inputMap, numEntries, argv[2]);
+
+    // memcpy(outputMap, inputMap, numEntries * ENTRY_SIZE);
+    // msync(outputMap, numEntries * ENTRY_SIZE, MS_SYNC);
 
     if((status = mapCleanUp(inputMap, inpFd, numEntries * ENTRY_SIZE)) != 0) {
         return status;
     }
-    if((status = mapCleanUp(outputMap, outFd, numEntries * ENTRY_SIZE)) != 0) {
-        return status;
-    }
+    // if((status = mapCleanUp(outputMap, outFd, numEntries * ENTRY_SIZE)) != 0) {
+    //     return status;
+    // }
     
     return 0;
 }
+
+#endif
 
 /**
  * Takes an entry size and filename then maps the whole file
@@ -78,7 +86,7 @@ int main(int argc, char** argv) {
  * @return 0 if successful 1 if an error occurs
 */
 int mapInputFile(void** map, int* fd, int* numEntries, char* fileName) {
-    if((*fd = open(fileName, O_RDONLY)) < 0) {
+    if((*fd = open(fileName, O_RDWR)) < 0) {
         return 1;
     }
 
@@ -88,7 +96,7 @@ int mapInputFile(void** map, int* fd, int* numEntries, char* fileName) {
         return 1;
     }
 
-    if((*map = mmap(NULL, fileStats.st_size, PROT_READ, MAP_SHARED, *fd, 0)) == (void*)-1) {
+    if((*map = mmap(NULL, fileStats.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, *fd, 0)) == (void*)-1) {
         return 1;
     }
 
@@ -110,14 +118,28 @@ int mapInputFile(void** map, int* fd, int* numEntries, char* fileName) {
  * @return 0 if successful 1 if an error occurs
 */
 int mapOutputFile(void** map, int* fd, int size, char* fileName) {
-    if((*fd = open(fileName, O_WRONLY | O_CREAT, S_IRWXU)) < 0) {
+    if((*fd = open(fileName, O_RDWR | O_CREAT, S_IRWXU)) < 0) {
         return 1;
     }
 
-    if((*map = mmap(NULL, size, PROT_WRITE, MAP_SHARED, *fd, 0)) == (void*)-1) {
+    if((*map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, *fd, 0)) == (void*)-1) {
         return 1;
     }
 
+    return 0;
+}
+
+int writeEntries(void* map, int numEntries, char* fileName) {
+    int fd;
+    if((fd = open(fileName, O_RDWR | O_CREAT, S_IRWXU)) < 0) {
+        return 1;
+    }
+
+    for(int i = 0; i < numEntries; i++) {
+        write(fd, getEntry(map, i), ENTRY_SIZE);
+    }
+
+    close(fd);
     return 0;
 }
 
@@ -131,11 +153,11 @@ int mapOutputFile(void** map, int* fd, int size, char* fileName) {
  * @return 0 if successful 1 if an error occurs
 */
 int mapCleanUp(void* map, int fd, int size) {
-    if(munmap(map, size) == -1) {
+    if(close(fd) == -1) {
         return 1;
     }
 
-    if(close(fd) == -1) {
+    if(munmap(map, size) == -1) {
         return 1;
     }
 
@@ -198,7 +220,8 @@ int sampleSort(void* arr, int length) {
 /**
  * Runs the quick sort algorithm on arr.
  * 
- * @param arr Struct containing array and length
+ * @param arr    Array to sort
+ * @param length Length of arr
 */
 void quickSort(void* arr, int length) {
 
@@ -322,11 +345,11 @@ void createBuckets(struct node*** buckets, struct node*** tails, int* bucketSize
     *buckets = malloc(NUM_CORES * sizeof(struct node*));
     *tails = malloc(NUM_CORES * sizeof(struct node*));
     for(int i = 0; i < NUM_CORES; i++) {
-        struct node head;
-        head.entryIndex = -1;
-        head.next = NULL;
-        (*buckets)[i] = &head;
-        (*tails)[i] = &head;
+        struct node* head = malloc(sizeof(struct node));
+        head->entryIndex = -1;
+        head->next = NULL;
+        (*buckets)[i] = head;
+        (*tails)[i] = head;
     }
 }
 
@@ -346,20 +369,20 @@ void fillBuckets(struct node** buckets, struct node** tails, int* bucketSizes, i
 
         int key = getKey(arr, i);
 
-        struct node element;
-        element.entryIndex = key;
-        element.next = NULL;
+        struct node* element = malloc(sizeof(struct node));
+        element->entryIndex = i;
+        element->next = NULL;
 
         for(int j = 0; j < selectedSamplesLength; j++) {
             if(key <= selectedSamples[j]) {
-                tails[j]->next = &element;
-                tails[j] = &element;
+                tails[j]->next = element;
+                tails[j] = element;
                 bucketSizes[j]++;
                 goto NEXT;
             }
         }
-        tails[selectedSamplesLength]->next = &element;
-        tails[selectedSamplesLength] = &element;
+        tails[selectedSamplesLength]->next = element;
+        tails[selectedSamplesLength] = element;
         bucketSizes[selectedSamplesLength]++;
 
         NEXT:
@@ -377,11 +400,16 @@ void placeBuckets(struct node** buckets, int* bucketSizes, void* arr) {
     int arrCounter = 0;
     void* tmp = malloc(ENTRY_SIZE);
     for(int i = 0; i < NUM_CORES; i++) {
-        struct node curNode = *(buckets[i]->next);
+        if(bucketSizes[i] == 0) {
+            continue;
+        }
+        struct node* curNode = buckets[i]->next;
         for(int j = 0; j < bucketSizes[i]; j++) {
-            swap(arr, arrCounter, curNode.entryIndex, tmp);
+            if(arrCounter != curNode->entryIndex) {
+                swap(arr, arrCounter, curNode->entryIndex, tmp);
+            }
             arrCounter++;
-            curNode = *(curNode.next);
+            curNode = curNode->next;
         }
     }
     free(tmp);

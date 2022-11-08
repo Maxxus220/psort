@@ -1,5 +1,4 @@
 #include "psort.h"
-#include "psort.c"
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
